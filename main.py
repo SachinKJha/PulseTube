@@ -1,7 +1,9 @@
 # main.py
 import os
 import sys
+import io
 import stat
+import re
 import json
 import time
 import shutil
@@ -11,35 +13,23 @@ import platform
 import tempfile
 import threading
 import subprocess
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 import tkinter as tk
 from tkinter import filedialog
 import eel
 
-import io
 # Prevent Bottle/Gevent from crashing when compiled with --noconsole
 if sys.stdout is None:
     sys.stdout = io.StringIO()
 if sys.stderr is None:
     sys.stderr = io.StringIO()
 
-def resource_path(relative_path):
-    """Checks PyInstaller's _internal (_MEIPASS) folder first, then exe folder."""
-    if hasattr(sys, "_MEIPASS"):
-        candidate = os.path.join(sys._MEIPASS, relative_path)
-        if os.path.exists(candidate):
-            return candidate
-    if getattr(sys, "frozen", False):
-        base_path = os.path.dirname(sys.executable)
-    else:
-        base_path = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base_path, relative_path)
-
 IS_WINDOWS = platform.system() == "Windows"
+CREATE_NO_WINDOW = 0x08000000 if IS_WINDOWS else 0
 
-APP_VERSION = "1.0.3"
-# Replace with your actual GitHub username and repository name:
+APP_VERSION = "1.1.0"
 GITHUB_REPO = "SachinKJha/PulseTube"
 
 # Setup OS-appropriate AppData directory so C:\Program Files never blocks writes
@@ -87,6 +77,7 @@ def resource_path(relative_path):
         if os.path.exists(path):
             return path
     return candidates[0]
+
 eel.init(resource_path("web"))
 
 def ui_log(message):
@@ -112,7 +103,7 @@ def download_stream(url, dest, label):
     with urllib.request.urlopen(req) as response:
         total_size = int(response.info().get("Content-Length", 0))
         downloaded = 0
-        chunk_size = 262144  # Increased from 32KB to 256KB for much faster network writing
+        chunk_size = 262144
         with open(dest, "wb") as f:
             while True:
                 chunk = response.read(chunk_size)
@@ -142,15 +133,12 @@ def _check_and_install_deps():
         # 2. Verify ffmpeg & ffprobe
         if not os.path.exists(FFMPEG_PATH) or not os.path.exists(FFPROBE_PATH):
             ui_log("[SYSTEM] FFmpeg/FFprobe missing. Downloading media suite...")
-            
-            # Force UI update before the heavy TLS handshake blocks the thread
             eel.updateDepProgress("Connecting to FFmpeg mirror (~100MB)...", 0)()
-            
+
             ext = ".zip" if IS_WINDOWS else ".tar.xz"
             archive_path = os.path.join(TEMP_WORK_DIR, f"ffmpeg_pkg{ext}")
             download_stream(FFMPEG_ARCHIVE_URL, archive_path, "Downloading FFmpeg")
 
-            # Force UI update before the CPU-heavy decompression locks the thread
             eel.updateDepProgress("Decompressing FFmpeg (This takes 30-60 seconds)...", 95)()
             ui_log("[SYSTEM] Extracting FFmpeg binaries...")
             extract_dir = os.path.join(TEMP_WORK_DIR, "ff_extract")
@@ -190,7 +178,7 @@ def _check_and_install_deps():
     except Exception as e:
         ui_log(f"[ERROR] Dependency setup failed: {e}")
         eel.onDepError(str(e))()
-        
+
 @eel.expose
 def browse_txt_file():
     root = tk.Tk()
@@ -212,37 +200,32 @@ def browse_output_folder():
     root.destroy()
     return path
 
-@eel.expose
-def parse_txt_and_fetch_metadata(txt_path):
-    """Reads links from the .txt file and launches parallel metadata pre-fetchers."""
-    if not txt_path or not os.path.exists(txt_path):
-        return {"error": "Selected .txt file does not exist."}
+def _extract_yt_id(url):
+    """Extracts the 11-character YouTube video ID for instant thumbnail fallback."""
+    m = re.search(r"(?:v=|youtu\.be/|shorts/|embed/)([A-Za-z0-9_-]{11})", url)
+    return m.group(1) if m else None
 
-    with open(txt_path, "r", encoding="utf-8", errors="ignore") as f:
-        raw_lines = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
-
-    if not raw_lines:
-        return {"error": "No valid links found in the selected .txt file."}
-
-    items = []
-    for idx, url in enumerate(raw_lines):
-        items.append({
-            "id": idx,
-            "url": url,
-            "title": f"Fetching metadata... ({url[:42]}...)",
-            "channel": "Loading...",
-            "duration_str": "--:--",
-            "thumbnail": "",
-            "loaded": False
-        })
-
-    # Spawn background pool to fetch metadata concurrently (6 at a time for speed)
-    threading.Thread(target=_batch_fetch_metadata, args=(items,), daemon=True).start()
-    return {"items": items}
+def _fast_oembed_fallback(url):
+    """Instant 0.1s fallback for Title, Channel & Thumbnail so cards never stay blank."""
+    vid = _extract_yt_id(url)
+    thumb = f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg" if vid else ""
+    title = None
+    author = "YouTube Media"
+    try:
+        oembed_url = f"https://www.youtube.com/oembed?url={urllib.parse.quote(url, safe='')}&format=json"
+        req = urllib.request.Request(oembed_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            title = data.get("title")
+            author = data.get("author_name") or author
+            thumb = data.get("thumbnail_url") or thumb
+    except Exception:
+        pass
+    return {"title": title, "thumbnail": thumb, "channel": author}
 
 def _format_duration(seconds):
     if not seconds:
-        return "Live / Unknown"
+        return "Full Length"
     try:
         seconds = int(float(seconds))
         h = seconds // 3600
@@ -250,86 +233,195 @@ def _format_duration(seconds):
         s = seconds % 60
         return f"{h:02d}:{m:02d}:{s:02d}" if h > 0 else f"{m:02d}:{s:02d}"
     except Exception:
-        return "--:--"
+        return "Full Length"
+
+@eel.expose
+def parse_txt_and_fetch_metadata(txt_path, start_id=0):
+    """Reads a .txt file from disk and routes it through the unified link/playlist parser."""
+    if not txt_path or not os.path.exists(txt_path):
+        return {"error": "Selected .txt file does not exist.", "items": []}
+    try:
+        with open(txt_path, "r", encoding="utf-8", errors="replace") as f:
+            raw_text = f.read()
+        return parse_links_from_text(raw_text, start_id)
+    except Exception as e:
+        return {"error": f"Failed to read file: {e}", "items": []}
+
+@eel.expose
+def parse_links_from_text(raw_text, start_id=0):
+    """
+    Parses comma-separated links, newline-separated links, or dropped .txt content.
+    Automatically expands YouTube Playlists and Mixes, then triggers background metadata loading.
+    """
+    if not raw_text:
+        return {"error": "No links provided.", "items": []}
+
+    tokens = re.split(r"[,\r\n]+", raw_text)
+    raw_urls = []
+    for t in tokens:
+        clean = t.strip()
+        if clean.startswith("http://") or clean.startswith("https://"):
+            raw_urls.append(clean)
+
+    if not raw_urls:
+        return {"error": "No valid http:// or https:// links found.", "items": []}
+
+    items = []
+    next_id = int(start_id)
+
+    for url in raw_urls:
+        # Expand YouTube Playlists or Radio Mixes ("list=" in URL)
+        if "list=" in url and os.path.exists(YTDLP_PATH):
+            ui_log(f"[PLAYLIST] Expanding playlist/mix: {url}")
+            try:
+                cmd = [
+                    YTDLP_PATH,
+                    "--flat-playlist",
+                    "--dump-single-json",
+                    "--playlist-end", "50",
+                    "--no-warnings",
+                    url
+                ]
+                proc = subprocess.run(
+                    cmd,
+                    startupinfo=get_startupinfo(),
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=20
+                )
+                if proc.returncode == 0 and proc.stdout.strip():
+                    pl_data = json.loads(proc.stdout.strip().splitlines()[-1])
+                    entries = pl_data.get("entries") or []
+                    if entries:
+                        pl_title = pl_data.get("title") or "YouTube Playlist"
+                        for entry in entries:
+                            vid_id = entry.get("id")
+                            entry_url = entry.get("url") or (f"https://www.youtube.com/watch?v={vid_id}" if vid_id else None)
+                            if not entry_url:
+                                continue
+                            if not entry_url.startswith("http"):
+                                entry_url = f"https://www.youtube.com/watch?v={vid_id}"
+                            thumb = f"https://i.ytimg.com/vi/{vid_id}/mqdefault.jpg" if vid_id else ""
+                            items.append({
+                                "id": next_id,
+                                "url": entry_url,
+                                "title": entry.get("title") or f"Loading track #{next_id + 1}...",
+                                "channel": entry.get("channel") or entry.get("uploader") or pl_title,
+                                "duration_str": _format_duration(entry.get("duration")),
+                                "thumbnail": thumb,
+                                "loaded": bool(entry.get("title") and thumb),
+                                "error": False
+                            })
+                            next_id += 1
+                        ui_log(f"[PLAYLIST] Expanded {len(entries)} tracks from '{pl_title}'.")
+                        continue
+            except Exception as e:
+                ui_log(f"[PLAYLIST] Playlist expansion fallback to single video: {e}")
+
+        vid = _extract_yt_id(url)
+        instant_thumb = f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg" if vid else ""
+        items.append({
+            "id": next_id,
+            "url": url,
+            "title": f"Fetching title... ({url})",
+            "channel": "Loading metadata...",
+            "duration_str": "--:--",
+            "thumbnail": instant_thumb,
+            "loaded": False,
+            "error": False
+        })
+        next_id += 1
+
+    # Start background metadata enrichment for items that need full details
+    to_fetch = [it for it in items if not it.get("loaded")]
+    if to_fetch:
+        threading.Thread(target=_batch_fetch_metadata, args=(to_fetch,), daemon=True).start()
+    else:
+        eel.onMetadataBatchComplete()()
+
+    return {"error": None, "items": items}
 
 def _fetch_single_meta(item):
     url = item["url"]
     idx = item["id"]
-    cmd = [
-        YTDLP_PATH,
-        "--dump-json",
-        "--no-playlist",
-        "--skip-download",
-        "--no-warnings",
-        url
-    ]
-    try:
-        res = subprocess.run(
-            cmd,
-            startupinfo=get_startupinfo(),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=25
-        )
-        if res.returncode == 0 and res.stdout.strip():
-            first_line = res.stdout.strip().splitlines()[0]
-            data = json.loads(first_line)
-            meta = {
-                "id": idx,
-                "title": data.get("title") or url,
-                "channel": data.get("uploader") or data.get("channel") or "YouTube Media",
-                "duration_str": _format_duration(data.get("duration")),
-                "thumbnail": data.get("thumbnail") or "",
-                "loaded": True,
-                "error": False
-            }
-            eel.updateItemMetadata(meta)()
-            ui_log(f"[META] Loaded: {meta['title']}")
-            return
-    except Exception as e:
-        ui_log(f"[WARN] Metadata timeout/error for link #{idx + 1}: {e}")
 
-    # Fallback if metadata fetch fails so user can still attempt download
-    fallback = {
+    # Step 1: Instant 0.1s oEmbed + Thumbnail push so UI never gets stuck with raw URLs
+    fast = _fast_oembed_fallback(url)
+    if fast["title"] or fast["thumbnail"]:
+        eel.updateItemMetadata({
+            "id": idx,
+            "title": fast["title"] or item["title"],
+            "channel": fast["channel"],
+            "duration_str": item.get("duration_str", "Full Length"),
+            "thumbnail": fast["thumbnail"],
+            "loaded": True,
+            "error": False
+        })()
+
+    # Step 2: Query yt-dlp for exact duration and high-res metadata (with 1 retry)
+    for attempt in range(2):
+        cmd = [
+            YTDLP_PATH,
+            "--dump-json",
+            "--no-playlist",
+            "--skip-download",
+            "--no-warnings",
+            "--socket-timeout", "10",
+            url
+        ]
+        try:
+            res = subprocess.run(
+                cmd,
+                startupinfo=get_startupinfo(),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=18
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                first_line = res.stdout.strip().splitlines()[0]
+                data = json.loads(first_line)
+                meta = {
+                    "id": idx,
+                    "title": data.get("title") or fast["title"] or url,
+                    "channel": data.get("uploader") or data.get("channel") or fast["channel"],
+                    "duration_str": _format_duration(data.get("duration")),
+                    "thumbnail": data.get("thumbnail") or fast["thumbnail"],
+                    "loaded": True,
+                    "error": False
+                }
+                eel.updateItemMetadata(meta)()
+                ui_log(f"[META] Loaded: {meta['title']}")
+                return
+        except Exception as e:
+            if attempt == 1:
+                ui_log(f"[WARN] Full metadata timeout for item #{idx + 1}, kept fast oEmbed preview ({e})")
+            time.sleep(0.4)
+
+    # Final fallback if both yt-dlp attempts fail
+    fallback_meta = {
         "id": idx,
-        "title": f"Media Stream #{idx + 1} ({url})",
-        "channel": "Direct Link",
+        "title": fast["title"] or f"YouTube Media #{idx + 1} ({url})",
+        "channel": fast["channel"],
         "duration_str": "Full Length",
-        "thumbnail": "",
+        "thumbnail": fast["thumbnail"],
         "loaded": True,
         "error": False
     }
-    eel.updateItemMetadata(fallback)()
+    eel.updateItemMetadata(fallback_meta)()
 
 def _batch_fetch_metadata(items):
-    ui_log(f"[SYSTEM] Pre-fetching metadata for {len(items)} link(s) using 6 parallel workers...")
-    with ThreadPoolExecutor(max_workers=6) as executor:
+    ui_log(f"[SYSTEM] Pre-fetching metadata for {len(items)} link(s) using 4 parallel workers...")
+    with ThreadPoolExecutor(max_workers=4) as executor:
         executor.map(_fetch_single_meta, items)
     ui_log("[SYSTEM] Metadata pre-fetch complete.")
     eel.onMetadataBatchComplete()()
 
 @eel.expose
 def start_download_queue(payload):
-    """
-    payload = {
-        'out_dir': str,
-        'format_type': 'mp3' | 'mp4',
-        'quality': str,
-        'concurrency': int,
-        'items': [
-            {
-                'id': int,
-                'url': str,
-                'title': str,
-                'use_trim': bool,
-                'trim_from': str,
-                'trim_to': str
-            }
-        ]
-    }
-    """
     global cancel_requested
     cancel_requested = False
     threading.Thread(target=_run_download_manager, args=(payload,), daemon=True).start()
@@ -358,7 +450,6 @@ def _download_worker(task, out_dir, format_type, quality):
         eel.updateItemStatus(item_id, "Cancelled", 0, "", "cancelled")()
         return False
 
-    # Dedicated isolated temp folder for this item inside AppData
     item_temp_dir = os.path.join(TEMP_WORK_DIR, f"job_{item_id}_{int(time.time()*1000)}")
     os.makedirs(item_temp_dir, exist_ok=True)
 
@@ -369,7 +460,6 @@ def _download_worker(task, out_dir, format_type, quality):
             eel.updateItemStatus(item_id, "Cancelled", 0, "", "cancelled")()
             return False
 
-        # Clean any partial files from previous retry
         for f in os.listdir(item_temp_dir):
             try:
                 os.remove(os.path.join(item_temp_dir, f))
@@ -389,7 +479,6 @@ def _download_worker(task, out_dir, format_type, quality):
         ]
 
         if format_type == "mp3":
-            # Map quality selection: '0' (Best/320K), '192K', '128K'
             audio_q = "0" if quality == "320" else f"{quality}K"
             cmd.extend([
                 "-x",
@@ -400,10 +489,10 @@ def _download_worker(task, out_dir, format_type, quality):
             ])
             target_ext = ".mp3"
         else:
-            # MP4 Video: Prefer H.264 (avc1) + m4a to prevent AV1 green-bar decoder glitches
+            # MP4 Video: True 4K/2K via VP9 (height>1080), and H.264 (avc1) for <=1080p
             res_map = {
-                "2160": "bestvideo[height<=2160][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<=2160][vcodec^=vp9]+bestaudio[ext=m4a]/bestvideo[height<=2160]+bestaudio/best[height<=2160]/best",
-                "1440": "bestvideo[height<=1440][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<=1440][vcodec^=vp9]+bestaudio[ext=m4a]/bestvideo[height<=1440]+bestaudio/best[height<=1440]/best",
+                "2160": "bestvideo[height<=2160][height>1080][vcodec^=vp]+bestaudio[ext=m4a]/bestvideo[height<=2160][height>1080]+bestaudio/bestvideo[height<=1080][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<=2160]+bestaudio/best",
+                "1440": "bestvideo[height<=1440][height>1080][vcodec^=vp]+bestaudio[ext=m4a]/bestvideo[height<=1440][height>1080]+bestaudio/bestvideo[height<=1080][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<=1440]+bestaudio/best",
                 "1080": "bestvideo[height<=1080][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
                 "720": "bestvideo[height<=720][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]/best",
                 "480": "bestvideo[height<=480][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480]/best",
@@ -416,7 +505,6 @@ def _download_worker(task, out_dir, format_type, quality):
             ])
             target_ext = ".mp4"
 
-        # Timestamp trimming if enabled by user for this video
         if use_trim and (trim_from or trim_to):
             start_t = trim_from if trim_from else "00:00"
             end_t = trim_to if trim_to else "inf"
@@ -481,7 +569,6 @@ def _download_worker(task, out_dir, format_type, quality):
                 return False
 
             if proc.returncode == 0:
-                # Move final file(s) to destination with clean (1), (2) duplicate handling
                 moved_any = False
                 for fname in os.listdir(item_temp_dir):
                     if fname.endswith(target_ext):
@@ -574,9 +661,7 @@ def find_chromium_browser():
                 return found
     return None
 
-
 def _parse_version(v_str):
-    """Converts 'v1.0.2' into a comparable tuple (1, 0, 2)."""
     clean = v_str.strip().lstrip("vV")
     parts = []
     for p in clean.split("."):
@@ -586,7 +671,6 @@ def _parse_version(v_str):
 
 @eel.expose
 def check_for_updates():
-    """Checks GitHub Releases in the background on startup."""
     threading.Thread(target=_check_github_release, daemon=True).start()
 
 def _check_github_release():
@@ -629,10 +713,8 @@ def _check_github_release():
     except Exception as e:
         ui_log(f"[UPDATE] Update check skipped: {e}")
 
-
 @eel.expose
 def start_self_update(download_url):
-    """Downloads the new installer from GitHub and executes it."""
     threading.Thread(target=_run_self_update, args=(download_url,), daemon=True).start()
 
 IS_UPDATING = False
@@ -660,41 +742,35 @@ def _run_self_update(download_url):
                     if total_size > 0:
                         pct = int((downloaded / total_size) * 100)
                         eel.updateSelfUpdateProgress(f"Downloading update ({pct}%)...", pct)()
-                    if total_size > 0 and downloaded < total_size:
-                        raise RuntimeError("Download interrupted. Please check your internet connection and try again.")
+
+            # Verify full download AFTER the while loop finishes
+            if total_size > 0 and downloaded < total_size:
+                raise RuntimeError("Download interrupted. Please check your internet connection and try again.")
 
         eel.updateSelfUpdateProgress("Installing update & restarting...", 100)()
         IS_UPDATING = True
         time.sleep(0.5)
 
         if IS_WINDOWS:
-            # Spawn the detached update script BEFORE closing the window or exiting
             current_exe = os.path.abspath(sys.executable)
             bat_path = os.path.join(TEMP_WORK_DIR, "apply_update.bat")
             with open(bat_path, "w", encoding="utf-8") as bf:
                 bf.write("@echo off\r\n")
-                # Wait ~3 seconds for the old PulseTube.exe to fully exit (works without console stdin)
                 bf.write("ping 127.0.0.1 -n 4 >nul\r\n")
-                # Run Inno Setup silently and WAIT for it to finish overwriting files
                 bf.write(f'start /wait "" "{installer_path}" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS\r\n')
-                # Relaunch the newly updated PulseTube.exe
                 bf.write(f'start "" "{current_exe}"\r\n')
-                # Clean up temporary installer and batch script
                 bf.write(f'del /f /q "{installer_path}" >nul 2>&1\r\n')
                 bf.write('del /f /q "%~f0" >nul 2>&1\r\n')
 
-            CREATE_NO_WINDOW = 0x08000000
             subprocess.Popen(
                 ["cmd.exe", "/c", bat_path],
                 creationflags=CREATE_NO_WINDOW,
                 close_fds=True
             )
         else:
-            # On Linux, wait 2s, prompt for sudo via polkit GUI (pkexec) to install .deb, then relaunch
             cmd = f'sleep 2 && pkexec dpkg -i "{installer_path}" && rm -f "{installer_path}" && /opt/pulsetube/PulseTube &'
             subprocess.Popen(["bash", "-c", cmd], start_new_session=True)
 
-        # Now safely close the Chrome app window and exit the old process
         try:
             eel.closeWindowForUpdate()()
         except Exception:
@@ -707,13 +783,11 @@ def _run_self_update(download_url):
         ui_log(f"[ERROR] Update failed: {e}")
         eel.onSelfUpdateError(str(e))()
 
-                
 def launch_app():
     browser_path = find_chromium_browser()
     if browser_path:
         eel.browsers.set_path("chrome", browser_path)
 
-    # Dedicated profile directory prevents Chrome's "Who's using Chrome?" account popup
     browser_profile_dir = os.path.join(APPDATA_DIR, "browser_profile")
     os.makedirs(browser_profile_dir, exist_ok=True)
 
