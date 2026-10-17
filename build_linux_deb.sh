@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+APP_VER="1.1.0"
 set -e
 
 echo "[1/4] Compiling Linux binary with PyInstaller..."
@@ -7,7 +8,7 @@ pyinstaller --noconsole --onedir --name "PulseTube" --icon "icon.png" \
   --hidden-import bottle_websocket --collect-data eel \
   --add-data "web:web" main.py --noconfirm
 
-PKG_DIR="deb_build/pulsetube_1.0.2_amd64"
+PKG_DIR="deb_build/pulsetube_${APP_VER}_amd64"
 echo "[2/4] Creating Debian package hierarchy..."
 rm -rf deb_build
 mkdir -p "$PKG_DIR/DEBIAN"
@@ -44,7 +45,7 @@ EOF
 # Create DEBIAN/control metadata
 cat << 'EOF' > "$PKG_DIR/DEBIAN/control"
 Package: pulsetube
-Version: 1.0.2
+Version: ${APP_VER}
 Section: sound
 Priority: optional
 Architecture: amd64
@@ -57,6 +58,6 @@ EOF
 echo "[3/4] Building .deb installer package..."
 dpkg-deb --build "$PKG_DIR"
 mkdir -p installer_out
-mv deb_build/pulsetube_1.0.2_amd64.deb installer_out/
+mv deb_build/pulsetube_${APP_VER}_amd64.deb installer_out/
 
-echo "[4/4] Done! Linux installer saved to: installer_out/pulsetube_1.0.2_amd64.deb"
+echo "[4/4] Done! Linux installer saved to: installer_out/pulsetube_${APP_VER}_amd64.deb"
