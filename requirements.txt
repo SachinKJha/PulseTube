@@ -1,0 +1,6 @@
+eel>=0.16.0
+Pillow>=10.0.0
+pyinstaller>=6.0.0
+bottle-websocket>=0.2.9
+gevent-websocket>=0.10.1
+requests>=2.31.0
