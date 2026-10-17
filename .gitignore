@@ -1,0 +1,7 @@
+build/
+dist/
+deb_build/
+installer_out/
+__pycache__/
+*.spec
+inno_setup.exe

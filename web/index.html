@@ -1,0 +1,700 @@
+<!-- web/index.html -->
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PulseTube Studio — Batch Media Downloader</title>
+  <link rel="icon" type="image/png" href="icon.png" />
+  <script type="text/javascript" src="/eel.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            ytred: '#FF0033',
+            ytdark: '#0f0f0f',
+            ytcard: '#18181b'
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+    body {
+      font-family: 'Inter', sans-serif;
+      user-select: none;
+    }
+    .mono {
+      font-family: 'JetBrains Mono', monospace;
+    }
+    /* Custom Scrollbar */
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(156, 163, 175, 0.25);
+      border-radius: 9999px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 0, 51, 0.6);
+    }
+  </style>
+</head>
+<body class="bg-slate-100 dark:bg-[#09090b] text-slate-900 dark:text-zinc-100 min-h-screen flex flex-col overflow-hidden transition-colors duration-300">
+
+  <!-- Ambient YouTube Red Glow Orbs for Frosted Glass Depth -->
+  <div class="fixed -top-32 -left-32 w-96 h-96 bg-ytred/20 rounded-full blur-[130px] pointer-events-none z-0"></div>
+  <div class="fixed top-1/3 -right-32 w-96 h-96 bg-rose-600/10 rounded-full blur-[140px] pointer-events-none z-0"></div>
+
+  <!-- Dependency Installer Modal (Shown only while checking/installing yt-dlp & ffmpeg) -->
+  <div id="depModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xl transition-opacity duration-300">
+    <div class="w-full max-w-md p-7 rounded-2xl bg-white/90 dark:bg-zinc-900/80 border border-slate-200 dark:border-white/10 shadow-2xl text-center">
+      <div class="w-14 h-14 mx-auto mb-4 rounded-2xl bg-ytred/15 border border-ytred/30 flex items-center justify-center">
+        <svg class="w-8 h-8 text-ytred animate-pulse" fill="currentColor" viewBox="0 0 24 24">
+          <path d="M19.615 3.184c-3.604-.246-11.631-.245-15.23 0-3.897.266-4.356 2.62-4.385 8.816.029 6.185.484 8.549 4.385 8.816 3.6.245 11.626.246 15.23 0 3.897-.266 4.356-2.62 4.385-8.816-.029-6.185-.484-8.549-4.385-8.816zm-10.615 12.816v-8l8 3.993-8 4.007z"/>
+        </svg>
+      </div>
+      <h2 class="text-lg font-bold tracking-tight">Initializing Media Engine</h2>
+      <p id="depStatusText" class="text-xs text-slate-500 dark:text-zinc-400 mt-1 mb-4">Checking local yt-dlp and FFmpeg binaries...</p>
+      <div class="w-full h-2.5 bg-slate-200 dark:bg-zinc-800 rounded-full overflow-hidden">
+        <div id="depProgressBar" class="h-full bg-gradient-to-r from-ytred to-rose-500 transition-all duration-200" style="width: 10%"></div>
+      </div>
+      <p class="text-[11px] text-slate-400 dark:text-zinc-500 mt-3">Please wait. This is a one-time setup (~100MB) and may take a minute.</p>    </div>
+  </div>
+
+<!-- Auto-Updater Modal (Hidden by default, shown when GitHub has a newer release) -->
+  <div id="updateModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xl transition-opacity duration-300">
+    <div class="w-full max-w-md p-6 rounded-2xl bg-white/95 dark:bg-zinc-900/90 border border-slate-200 dark:border-white/10 shadow-2xl">
+      <div class="flex items-center gap-3 mb-3">
+        <div class="w-11 h-11 rounded-xl bg-ytred/15 border border-ytred/30 flex items-center justify-center shrink-0">
+          <svg class="w-6 h-6 text-ytred" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+          </svg>
+        </div>
+        <div>
+          <h2 class="text-base font-bold tracking-tight">Update Available!</h2>
+          <p id="updateVersionText" class="text-xs text-ytred font-semibold">New version ready to install</p>
+        </div>
+      </div>
+
+      <div id="updateNotesBox" class="text-xs text-slate-600 dark:text-zinc-300 bg-slate-100 dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-xl p-3 max-h-36 overflow-y-auto whitespace-pre-line mb-4">
+        Bug fixes and new features available.
+      </div>
+
+      <!-- Progress bar shown after clicking Update Now -->
+      <div id="updateProgressContainer" class="hidden mb-4">
+        <p id="updateProgressLabel" class="text-xs text-slate-500 dark:text-zinc-400 mb-1.5">Downloading update...</p>
+        <div class="w-full h-2 bg-slate-200 dark:bg-zinc-800 rounded-full overflow-hidden">
+          <div id="updateProgressBar" class="h-full bg-gradient-to-r from-ytred to-rose-500 transition-all duration-200" style="width: 0%"></div>
+        </div>
+      </div>
+
+      <div id="updateActionButtons" class="flex items-center justify-end gap-2.5">
+        <button onclick="dismissUpdateModal()" class="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-200 dark:bg-white/10 hover:bg-slate-300 dark:hover:bg-white/15 transition">
+          Later
+        </button>
+        <button onclick="confirmSelfUpdate()" class="px-5 py-2 rounded-xl text-xs font-bold bg-gradient-to-r from-ytred to-rose-600 hover:from-rose-600 hover:to-ytred text-white shadow-lg shadow-ytred/25 transition">
+          Update Now
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Top Frosted Glass Navbar -->
+  <header class="relative z-10 flex items-center justify-between px-6 py-3.5 bg-white/70 dark:bg-zinc-900/60 backdrop-blur-xl border-b border-slate-200/80 dark:border-white/10">
+    <div class="flex items-center gap-3">
+      <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-ytred to-rose-700 flex items-center justify-center shadow-lg shadow-ytred/25">
+        <svg class="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 24 24">
+          <path d="M8 5v14l11-7z"/>
+        </svg>
+      </div>
+      <div>
+        <div class="flex items-center gap-2">
+          <h1 class="text-base font-bold tracking-tight">PulseTube <span class="text-ytred">Studio</span></h1>
+          <span class="text-[10px] font-semibold uppercase px-2 py-0.5 rounded-full bg-ytred/15 text-ytred border border-ytred/30">Pro v1.0</span>
+        </div>
+        <p class="text-[11px] text-slate-500 dark:text-zinc-400">Batch MP3 & MP4 Downloader with Precision Trimming</p>
+      </div>
+    </div>
+
+    <div class="flex items-center gap-2.5">
+      <!-- Engine Ready Pill -->
+      <div id="engineBadge" class="hidden sm:flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+        <span class="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
+        <span>yt-dlp + FFmpeg Ready</span>
+      </div>
+
+      <!-- Dark / Light Mode Toggle -->
+      <button onclick="toggleTheme()" class="p-2 rounded-xl bg-slate-200/70 dark:bg-white/5 hover:bg-slate-300/70 dark:hover:bg-white/10 border border-slate-300/60 dark:border-white/10 transition" title="Toggle Dark/Light Theme">
+        <svg id="themeIconSun" class="w-4 h-4 hidden dark:block text-amber-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="5"></circle>
+          <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"></path>
+        </svg>
+        <svg id="themeIconMoon" class="w-4 h-4 block dark:hidden text-slate-700" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Workspace Container -->
+  <main class="relative z-10 flex-1 flex flex-col gap-4 p-5 overflow-hidden max-w-7xl w-full mx-auto">
+
+    <!-- Control Deck (Frosted Glass Card) -->
+    <section class="p-4 rounded-2xl bg-white/75 dark:bg-zinc-900/60 backdrop-blur-xl border border-slate-200/80 dark:border-white/10 shadow-lg flex flex-col gap-3.5">
+      <!-- Row 1: File & Destination Pickers -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <!-- .TXT File Picker -->
+        <div class="flex items-center gap-2">
+          <div class="flex-1 relative">
+            <input id="txtPathInput" type="text" readonly placeholder="1. Select .txt file containing YouTube links..."
+              class="w-full pl-3.5 pr-3 py-2 text-xs rounded-xl bg-slate-100/90 dark:bg-black/40 border border-slate-300/80 dark:border-white/10 text-slate-800 dark:text-zinc-200 focus:outline-none" />
+          </div>
+          <button onclick="pickTxtFile()" class="px-3.5 py-2 rounded-xl text-xs font-semibold bg-slate-800 dark:bg-white/10 hover:bg-slate-700 dark:hover:bg-white/20 text-white border border-white/10 transition shrink-0">
+            Browse .txt
+          </button>
+        </div>
+
+        <!-- Output Folder Picker -->
+        <div class="flex items-center gap-2">
+          <div class="flex-1 relative">
+            <input id="outPathInput" type="text" readonly placeholder="2. Choose destination folder for downloads..."
+              class="w-full pl-3.5 pr-3 py-2 text-xs rounded-xl bg-slate-100/90 dark:bg-black/40 border border-slate-300/80 dark:border-white/10 text-slate-800 dark:text-zinc-200 focus:outline-none" />
+          </div>
+          <button onclick="pickOutFolder()" class="px-3.5 py-2 rounded-xl text-xs font-semibold bg-slate-800 dark:bg-white/10 hover:bg-slate-700 dark:hover:bg-white/20 text-white border border-white/10 transition shrink-0">
+            Browse Dest
+          </button>
+        </div>
+      </div>
+
+      <!-- Row 2: Format Selector, Quality Dropdown, Concurrency & Action Buttons -->
+      <div class="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-200/60 dark:border-white/10">
+        <div class="flex flex-wrap items-center gap-3">
+          <!-- Segmented Format Toggle (MP3 vs MP4) -->
+          <div class="inline-flex p-1 rounded-xl bg-slate-200/80 dark:bg-black/50 border border-slate-300/60 dark:border-white/10">
+            <button id="btnFmtMp3" onclick="setFormat('mp3')" class="px-3.5 py-1.5 rounded-lg text-xs font-semibold transition bg-ytred text-white shadow">
+              MP3 Audio
+            </button>
+            <button id="btnFmtMp4" onclick="setFormat('mp4')" class="px-3.5 py-1.5 rounded-lg text-xs font-semibold transition text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-white">
+              MP4 Video
+            </button>
+          </div>
+
+          <!-- Dynamic Quality Selector -->
+          <div class="flex items-center gap-1.5">
+            <label class="text-xs font-medium text-slate-500 dark:text-zinc-400">Quality:</label>
+            <select id="qualitySelect" class="px-2.5 py-1.5 rounded-xl text-xs font-medium bg-slate-100 dark:bg-zinc-800/90 border border-slate-300 dark:border-white/10 focus:outline-none">
+              <option value="320">320 kbps (Best Audio)</option>
+              <option value="192">192 kbps (High)</option>
+              <option value="128">128 kbps (Standard)</option>
+            </select>
+          </div>
+
+          <!-- Parallel Workers Selector -->
+          <div class="flex items-center gap-1.5">
+            <label class="text-xs font-medium text-slate-500 dark:text-zinc-400">Parallel:</label>
+            <select id="concurrencySelect" class="px-2.5 py-1.5 rounded-xl text-xs font-medium bg-slate-100 dark:bg-zinc-800/90 border border-slate-300 dark:border-white/10 focus:outline-none">
+              <option value="3" selected>3x Fast (Recommended)</option>
+              <option value="2">2x Balanced</option>
+              <option value="1">1x Sequential</option>
+              <option value="4">4x Turbo</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Start & Cancel Buttons -->
+        <div class="flex items-center gap-2">
+          <button id="btnCancel" onclick="cancelDownloads()" disabled
+            class="hidden px-4 py-2 rounded-xl text-xs font-semibold bg-zinc-700 hover:bg-zinc-600 text-white transition">
+            Cancel Queue
+          </button>
+          <button id="btnStart" onclick="startDownloads()"
+            class="px-5 py-2 rounded-xl text-xs font-bold bg-gradient-to-r from-ytred to-rose-600 hover:from-rose-600 hover:to-ytred text-white shadow-lg shadow-ytred/25 transition flex items-center gap-2 disabled:opacity-40 disabled:pointer-events-none">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5m0 0l5-5m-5 5V4"/>
+            </svg>
+            <span>Download Selected</span>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Video Queue Header + Select All / Deselect All -->
+    <section class="flex-1 flex flex-col rounded-2xl bg-white/75 dark:bg-zinc-900/60 backdrop-blur-xl border border-slate-200/80 dark:border-white/10 shadow-lg overflow-hidden">
+      <div class="flex items-center justify-between px-4 py-2.5 border-b border-slate-200/80 dark:border-white/10 bg-slate-50/60 dark:bg-white/[0.02]">
+        <div class="flex items-center gap-3">
+          <button id="btnSelectAll" onclick="toggleSelectAll()" class="px-3 py-1 rounded-lg text-xs font-semibold bg-slate-200/80 dark:bg-white/10 hover:bg-ytred hover:text-white transition">
+            Deselect All
+          </button>
+          <span id="selectionCounter" class="text-xs font-medium text-slate-500 dark:text-zinc-400">
+            0 of 0 videos selected
+          </span>
+        </div>
+        <span class="text-[11px] text-slate-400 dark:text-zinc-500">
+          Tip: Click the arrow <span class="font-bold text-ytred">▾</span> on any item to trim custom timestamps
+        </span>
+      </div>
+
+      <!-- Scrollable Video List -->
+      <div id="videoListContainer" class="flex-1 overflow-y-auto p-3 space-y-2.5">
+        <!-- Empty State -->
+        <div id="emptyState" class="h-full flex flex-col items-center justify-center text-center py-12 text-slate-400 dark:text-zinc-500">
+          <svg class="w-12 h-12 mb-3 opacity-30" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2z"/>
+          </svg>
+          <p class="text-sm font-medium">No links loaded yet</p>
+          <p class="text-xs mt-1">Click <span class="font-semibold text-slate-600 dark:text-zinc-300">"Browse .txt"</span> above to load your YouTube links with live thumbnails & titles.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Bottom Master Progress Bar & Collapsible Terminal Log -->
+    <footer class="rounded-2xl bg-white/75 dark:bg-zinc-900/60 backdrop-blur-xl border border-slate-200/80 dark:border-white/10 shadow-lg p-3.5 flex flex-col gap-2">
+      <div class="flex items-center justify-between text-xs">
+        <span id="masterStatusText" class="font-semibold text-slate-700 dark:text-zinc-200">Idle — Ready for batch queue</span>
+        <div class="flex items-center gap-3">
+          <span id="masterCountBadge" class="mono text-[11px] text-slate-500 dark:text-zinc-400">0 / 0</span>
+          <button onclick="toggleLogDrawer()" class="text-[11px] font-semibold text-ytred hover:underline">
+            Toggle Live Log ▾
+          </button>
+        </div>
+      </div>
+
+      <div class="w-full h-2 bg-slate-200 dark:bg-zinc-800 rounded-full overflow-hidden">
+        <div id="masterProgressBar" class="h-full bg-gradient-to-r from-ytred via-rose-500 to-amber-500 transition-all duration-300" style="width: 0%"></div>
+      </div>
+
+      <!-- Collapsible Live Console Log -->
+      <div id="logDrawer" class="hidden mt-2 pt-2 border-t border-slate-200/60 dark:border-white/10">
+        <div id="logConsole" class="mono text-[11px] h-28 overflow-y-auto bg-black/85 text-emerald-400 p-2.5 rounded-xl space-y-1">
+          <div>[SYSTEM] PulseTube Studio initialized.</div>
+        </div>
+      </div>
+    </footer>
+
+  </main>
+
+  <script>
+    let currentFormat = 'mp3';
+    let mediaItems = []; // { id, url, title, channel, duration_str, thumbnail, checked, openDropdown, useTrim, trimFrom, trimTo }
+    let isDownloading = false;
+
+    const qualityOptions = {
+      mp3: [
+        { value: '320', label: '320 kbps (Best Audio)' },
+        { value: '192', label: '192 kbps (High)' },
+        { value: '128', label: '128 kbps (Standard)' }
+      ],
+      mp4: [
+        { value: '2160', label: '4K Ultra HD (2160p)' },
+        { value: '1440', label: '2K QHD (1440p)' },
+        { value: '1080', label: 'Full HD (1080p)' },
+        { value: '720', label: 'HD Ready (720p)' },
+        { value: '480', label: 'Standard (480p)' }
+      ]
+    };
+
+    window.addEventListener('DOMContentLoaded', () => {
+      eel.init_dependencies()();
+    });
+
+    function toggleTheme() {
+      document.documentElement.classList.toggle('dark');
+    }
+
+    function toggleLogDrawer() {
+      document.getElementById('logDrawer').classList.toggle('hidden');
+    }
+
+    function setFormat(fmt) {
+      currentFormat = fmt;
+      const btnMp3 = document.getElementById('btnFmtMp3');
+      const btnMp4 = document.getElementById('btnFmtMp4');
+      const qSelect = document.getElementById('qualitySelect');
+
+      if (fmt === 'mp3') {
+        btnMp3.className = 'px-3.5 py-1.5 rounded-lg text-xs font-semibold transition bg-ytred text-white shadow';
+        btnMp4.className = 'px-3.5 py-1.5 rounded-lg text-xs font-semibold transition text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-white';
+      } else {
+        btnMp4.className = 'px-3.5 py-1.5 rounded-lg text-xs font-semibold transition bg-ytred text-white shadow';
+        btnMp3.className = 'px-3.5 py-1.5 rounded-lg text-xs font-semibold transition text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-white';
+      }
+
+      qSelect.innerHTML = '';
+      qualityOptions[fmt].forEach((opt, idx) => {
+        const el = document.createElement('option');
+        el.value = opt.value;
+        el.textContent = opt.label;
+        if (fmt === 'mp4' && opt.value === '1080') el.selected = true;
+        qSelect.appendChild(el);
+      });
+    }
+
+    // Exposed callbacks for Python Dependency Installer
+    eel.expose(updateDepProgress);
+    function updateDepProgress(text, pct) {
+      document.getElementById('depStatusText').textContent = text;
+      document.getElementById('depProgressBar').style.width = `${pct}%`;
+    }
+
+let pendingUpdateUrl = '';
+
+    eel.expose(onDepsReady);
+    function onDepsReady(binDir) {
+      const modal = document.getElementById('depModal');
+      modal.classList.add('opacity-0', 'pointer-events-none');
+      setTimeout(() => modal.classList.add('hidden'), 300);
+      // Automatically check GitHub for updates once engine is ready
+      eel.check_for_updates()();
+    }
+
+    eel.expose(showUpdateModal);
+    function showUpdateModal(latestTag, notes, downloadUrl) {
+      pendingUpdateUrl = downloadUrl;
+      document.getElementById('updateVersionText').textContent = `Version ${latestTag} is ready to install`;
+      document.getElementById('updateNotesBox').textContent = notes;
+      document.getElementById('updateModal').classList.remove('hidden');
+    }
+
+    function dismissUpdateModal() {
+      document.getElementById('updateModal').classList.add('hidden');
+    }
+
+    function confirmSelfUpdate() {
+      if (!pendingUpdateUrl) return;
+      document.getElementById('updateActionButtons').classList.add('hidden');
+      document.getElementById('updateProgressContainer').classList.remove('hidden');
+      eel.start_self_update(pendingUpdateUrl)();
+    }
+
+    eel.expose(updateSelfUpdateProgress);
+    function updateSelfUpdateProgress(label, pct) {
+      document.getElementById('updateProgressLabel').textContent = label;
+      document.getElementById('updateProgressBar').style.width = `${pct}%`;
+    }
+
+    eel.expose(onSelfUpdateError);
+    function onSelfUpdateError(errMsg) {
+      document.getElementById('updateProgressLabel').textContent = `Update failed: ${errMsg}`;
+      document.getElementById('updateActionButtons').classList.remove('hidden');
+    }
+    
+    eel.expose(onDepError);
+    function onDepError(errStr) {
+      document.getElementById('depStatusText').textContent = `Error: ${errStr}`;
+      document.getElementById('depProgressBar').classList.replace('from-ytred', 'bg-red-600');
+    }
+
+    eel.expose(appendLog);
+    function appendLog(msg) {
+      const box = document.getElementById('logConsole');
+      const line = document.createElement('div');
+      line.textContent = msg;
+      box.appendChild(line);
+      box.scrollTop = box.scrollHeight;
+    }
+
+    async function pickTxtFile() {
+      if (isDownloading) return;
+      const path = await eel.browse_txt_file()();
+      if (!path) return;
+      document.getElementById('txtPathInput').value = path;
+
+      document.getElementById('masterStatusText').textContent = 'Reading links & pre-fetching thumbnails...';
+      const res = await eel.parse_txt_and_fetch_metadata(path)();
+      if (res.error) {
+        alert(res.error);
+        return;
+      }
+
+      mediaItems = res.items.map(item => ({
+        ...item,
+        checked: true,
+        openDropdown: false,
+        useTrim: false,
+        trimFrom: '',
+        trimTo: ''
+      }));
+
+      renderVideoList();
+      updateSelectionStats();
+    }
+
+    async function pickOutFolder() {
+      if (isDownloading) return;
+      const path = await eel.browse_output_folder()();
+      if (path) {
+        document.getElementById('outPathInput').value = path;
+      }
+    }
+
+    function renderVideoList() {
+      const container = document.getElementById('videoListContainer');
+      container.innerHTML = '';
+
+      if (mediaItems.length === 0) {
+        container.innerHTML = `<div class="p-8 text-center text-xs text-zinc-500">No links loaded.</div>`;
+        return;
+      }
+
+      mediaItems.forEach((item) => {
+        const card = document.createElement('div');
+        card.id = `card-${item.id}`;
+        card.className = 'rounded-xl bg-slate-100/80 dark:bg-white/[0.03] border border-slate-200/90 dark:border-white/10 p-2.5 transition hover:border-ytred/40';
+
+        const thumbPlaceholder = item.thumbnail
+          ? `<img id="thumb-${item.id}" src="${item.thumbnail}" class="w-24 h-14 object-cover rounded-lg border border-white/10 shrink-0" />`
+          : `<div id="thumb-wrap-${item.id}" class="w-24 h-14 rounded-lg bg-slate-300/50 dark:bg-zinc-800 flex items-center justify-center shrink-0 animate-pulse">
+               <svg class="w-5 h-5 text-zinc-500" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+             </div>`;
+
+        card.innerHTML = `
+          <div class="flex items-center gap-3">
+            <!-- Checkbox + Expand Arrow for Timestamp Dropdown -->
+            <div class="flex items-center gap-1.5 pl-1">
+              <input id="chk-${item.id}" type="checkbox" ${item.checked ? 'checked' : ''}
+                onchange="onToggleCheck(${item.id}, this.checked)"
+                class="w-4 h-4 rounded accent-ytred cursor-pointer" />
+              <button onclick="toggleItemDropdown(${item.id})"
+                title="Custom Timestamp Range"
+                class="p-1 rounded-lg hover:bg-slate-200 dark:hover:bg-white/10 text-slate-500 dark:text-zinc-400 transition">
+                <svg id="arrow-${item.id}" class="w-4 h-4 transition-transform duration-200 ${item.openDropdown ? 'rotate-180 text-ytred' : ''}" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
+                </svg>
+              </button>
+            </div>
+
+            <!-- Video Thumbnail -->
+            ${thumbPlaceholder}
+
+            <!-- Title, Channel & Individual Progress Bar -->
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center justify-between gap-2">
+                <h3 id="title-${item.id}" class="text-xs font-semibold truncate">${escapeHtml(item.title)}</h3>
+                <span id="dur-${item.id}" class="mono text-[10px] px-2 py-0.5 rounded bg-black/20 dark:bg-white/10 text-slate-600 dark:text-zinc-300 shrink-0">
+                  ${item.duration_str}
+                </span>
+              </div>
+              <div class="flex items-center justify-between text-[11px] text-slate-500 dark:text-zinc-400 mt-0.5">
+                <span id="chan-${item.id}" class="truncate">${escapeHtml(item.channel)}</span>
+                <span id="status-${item.id}" class="mono text-[10px] font-medium text-slate-400 dark:text-zinc-500">Queued</span>
+              </div>
+              <div class="w-full h-1.5 bg-slate-200 dark:bg-zinc-800 rounded-full overflow-hidden mt-1.5">
+                <div id="prog-${item.id}" class="h-full bg-ytred transition-all duration-200" style="width: 0%"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Minimalistic Timestamp Trim Dropdown -->
+          <div id="drop-${item.id}" class="${item.openDropdown ? 'flex' : 'hidden'} items-center justify-between gap-3 mt-2.5 pt-2.5 border-t border-slate-200/70 dark:border-white/10 pl-8 pr-2 text-xs">
+            <label class="flex items-center gap-2 cursor-pointer font-medium text-slate-700 dark:text-zinc-300">
+              <input type="checkbox" id="trim-chk-${item.id}" ${item.useTrim ? 'checked' : ''}
+                onchange="onToggleTrim(${item.id}, this.checked)"
+                class="w-3.5 h-3.5 accent-ytred rounded" />
+              <span>Download custom timestamp section only</span>
+            </label>
+            <div class="flex items-center gap-2">
+              <span class="text-[11px] text-slate-400">From:</span>
+              <input type="text" id="trim-from-${item.id}" placeholder="00:30" value="${item.trimFrom}"
+                oninput="onTrimInputChange(${item.id})"
+                class="mono w-20 px-2 py-1 text-xs rounded-lg bg-white dark:bg-black/50 border border-slate-300 dark:border-white/15 focus:outline-none focus:border-ytred" />
+              <span class="text-[11px] text-slate-400">To:</span>
+              <input type="text" id="trim-to-${item.id}" placeholder="02:15" value="${item.trimTo}"
+                oninput="onTrimInputChange(${item.id})"
+                class="mono w-20 px-2 py-1 text-xs rounded-lg bg-white dark:bg-black/50 border border-slate-300 dark:border-white/15 focus:outline-none focus:border-ytred" />
+            </div>
+          </div>
+        `;
+        container.appendChild(card);
+      });
+    }
+
+    eel.expose(updateItemMetadata);
+    function updateItemMetadata(meta) {
+      const item = mediaItems.find(x => x.id === meta.id);
+      if (!item) return;
+      item.title = meta.title;
+      item.channel = meta.channel;
+      item.duration_str = meta.duration_str;
+      item.thumbnail = meta.thumbnail;
+      item.loaded = true;
+
+      const titleEl = document.getElementById(`title-${item.id}`);
+      const chanEl = document.getElementById(`chan-${item.id}`);
+      const durEl = document.getElementById(`dur-${item.id}`);
+      const thumbWrap = document.getElementById(`thumb-wrap-${item.id}`);
+
+      if (titleEl) titleEl.textContent = item.title;
+      if (chanEl) chanEl.textContent = item.channel;
+      if (durEl) durEl.textContent = item.duration_str;
+      if (thumbWrap && item.thumbnail) {
+        thumbWrap.outerHTML = `<img id="thumb-${item.id}" src="${item.thumbnail}" class="w-24 h-14 object-cover rounded-lg border border-white/10 shrink-0" />`;
+      }
+    }
+
+    eel.expose(onMetadataBatchComplete);
+    function onMetadataBatchComplete() {
+      document.getElementById('masterStatusText').textContent = `Loaded ${mediaItems.length} video(s). Ready to download.`;
+    }
+
+    function onToggleCheck(id, isChecked) {
+      const item = mediaItems.find(x => x.id === id);
+      if (item) item.checked = isChecked;
+      updateSelectionStats();
+    }
+
+    function toggleSelectAll() {
+      const allSelected = mediaItems.length > 0 && mediaItems.every(x => x.checked);
+      const targetState = !allSelected;
+      mediaItems.forEach(item => {
+        item.checked = targetState;
+        const chk = document.getElementById(`chk-${item.id}`);
+        if (chk) chk.checked = targetState;
+      });
+      updateSelectionStats();
+    }
+
+    function updateSelectionStats() {
+      const selectedCount = mediaItems.filter(x => x.checked).length;
+      const total = mediaItems.length;
+      document.getElementById('selectionCounter').textContent = `${selectedCount} of ${total} videos selected`;
+      const btn = document.getElementById('btnSelectAll');
+      btn.textContent = (selectedCount === total && total > 0) ? 'Deselect All' : 'Select All';
+    }
+
+    function toggleItemDropdown(id) {
+      const item = mediaItems.find(x => x.id === id);
+      if (!item) return;
+      item.openDropdown = !item.openDropdown;
+      const drop = document.getElementById(`drop-${id}`);
+      const arrow = document.getElementById(`arrow-${id}`);
+      if (drop) drop.classList.toggle('hidden', !item.openDropdown);
+      if (drop) drop.classList.toggle('flex', item.openDropdown);
+      if (arrow) arrow.classList.toggle('rotate-180', item.openDropdown);
+      if (arrow) arrow.classList.toggle('text-ytred', item.openDropdown);
+    }
+
+    function onToggleTrim(id, enabled) {
+      const item = mediaItems.find(x => x.id === id);
+      if (item) item.useTrim = enabled;
+    }
+
+    function onTrimInputChange(id) {
+      const item = mediaItems.find(x => x.id === id);
+      if (!item) return;
+      const fromVal = document.getElementById(`trim-from-${id}`).value.trim();
+      const toVal = document.getElementById(`trim-to-${id}`).value.trim();
+      item.trimFrom = fromVal;
+      item.trimTo = toVal;
+      if (fromVal || toVal) {
+        item.useTrim = true;
+        const chk = document.getElementById(`trim-chk-${id}`);
+        if (chk) chk.checked = true;
+      }
+    }
+
+    function startDownloads() {
+      if (isDownloading) return;
+      const outDir = document.getElementById('outPathInput').value.trim();
+      const selected = mediaItems.filter(x => x.checked);
+
+      if (mediaItems.length === 0) {
+        alert('Please load a .txt file with links first.');
+        return;
+      }
+      if (selected.length === 0) {
+        alert('Please select at least one video to download.');
+        return;
+      }
+      if (!outDir) {
+        alert('Please select a destination folder.');
+        return;
+      }
+
+      isDownloading = true;
+      document.getElementById('btnStart').disabled = true;
+      const btnCancel = document.getElementById('btnCancel');
+      btnCancel.classList.remove('hidden');
+      btnCancel.disabled = false;
+
+      const payload = {
+        out_dir: outDir,
+        format_type: currentFormat,
+        quality: document.getElementById('qualitySelect').value,
+        concurrency: parseInt(document.getElementById('concurrencySelect').value, 10),
+        items: selected.map(x => ({
+          id: x.id,
+          url: x.url,
+          title: x.title,
+          use_trim: x.useTrim,
+          trim_from: x.trimFrom,
+          trim_to: x.trimTo
+        }))
+      };
+
+      eel.start_download_queue(payload)();
+    }
+
+    function cancelDownloads() {
+      document.getElementById('btnCancel').disabled = true;
+      eel.cancel_all_downloads()();
+    }
+
+    eel.expose(updateItemStatus);
+    function updateItemStatus(id, statusLabel, pct, metaStr, state) {
+      const statusEl = document.getElementById(`status-${id}`);
+      const progEl = document.getElementById(`prog-${id}`);
+      if (statusEl) {
+        statusEl.textContent = metaStr ? `${statusLabel} (${metaStr})` : statusLabel;
+        statusEl.className = 'mono text-[10px] font-semibold ';
+        if (state === 'done') statusEl.className += 'text-emerald-500';
+        else if (state === 'error' || state === 'cancelled') statusEl.className += 'text-rose-500';
+        else if (state === 'retry') statusEl.className += 'text-amber-500';
+        else statusEl.className += 'text-ytred';
+      }
+      if (progEl) {
+        progEl.style.width = `${Math.min(100, Math.max(0, pct))}%`;
+        if (state === 'done') progEl.className = 'h-full bg-emerald-500 transition-all duration-200';
+        else if (state === 'error') progEl.className = 'h-full bg-rose-600 transition-all duration-200';
+        else progEl.className = 'h-full bg-ytred transition-all duration-200';
+      }
+    }
+
+    eel.expose(updateMasterProgress);
+    function updateMasterProgress(completed, total, label) {
+      document.getElementById('masterStatusText').textContent = label;
+      document.getElementById('masterCountBadge').textContent = `${completed} / ${total}`;
+      const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+      document.getElementById('masterProgressBar').style.width = `${pct}%`;
+    }
+
+    eel.expose(onQueueFinished);
+    function onQueueFinished(succeeded, total, wasCancelled) {
+      isDownloading = false;
+      document.getElementById('btnStart').disabled = false;
+      document.getElementById('btnCancel').classList.add('hidden');
+      if (wasCancelled) {
+        document.getElementById('masterStatusText').textContent = `Queue cancelled (${succeeded} of ${total} finished).`;
+      } else {
+        document.getElementById('masterStatusText').textContent = `Batch Complete! ${succeeded} of ${total} files saved to destination.`;
+      }
+    }
+
+    function escapeHtml(str) {
+      return String(str || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+  </script>
+</body>
+</html>
