@@ -38,7 +38,7 @@ def resource_path(relative_path):
 
 IS_WINDOWS = platform.system() == "Windows"
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.3"
 # Replace with your actual GitHub username and repository name:
 GITHUB_REPO = "SachinKJha/PulseTube"
 
@@ -590,10 +590,7 @@ def check_for_updates():
     threading.Thread(target=_check_github_release, daemon=True).start()
 
 def _check_github_release():
-    if "SachinKJha" in GITHUB_REPO:
-        ui_log("[UPDATE] GitHub repo not configured yet. Skipping update check.")
-        return
-
+    ui_log(f"[UPDATE] Checking {GITHUB_REPO} (Current: v{APP_VERSION})...")
     api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
     try:
         req = urllib.request.Request(
@@ -632,12 +629,16 @@ def _check_github_release():
     except Exception as e:
         ui_log(f"[UPDATE] Update check skipped: {e}")
 
+
 @eel.expose
 def start_self_update(download_url):
     """Downloads the new installer from GitHub and executes it."""
     threading.Thread(target=_run_self_update, args=(download_url,), daemon=True).start()
 
+IS_UPDATING = False
+
 def _run_self_update(download_url):
+    global IS_UPDATING
     try:
         ext = ".exe" if IS_WINDOWS else ".deb"
         installer_path = os.path.join(TEMP_WORK_DIR, f"PulseTube_Update{ext}")
@@ -659,24 +660,54 @@ def _run_self_update(download_url):
                     if total_size > 0:
                         pct = int((downloaded / total_size) * 100)
                         eel.updateSelfUpdateProgress(f"Downloading update ({pct}%)...", pct)()
+                    if total_size > 0 and downloaded < total_size:
+                        raise RuntimeError("Download interrupted. Please check your internet connection and try again.")
 
-        eel.updateSelfUpdateProgress("Launching installer...", 100)()
-        time.sleep(0.6)
+        eel.updateSelfUpdateProgress("Installing update & restarting...", 100)()
+        IS_UPDATING = True
+        time.sleep(0.5)
 
         if IS_WINDOWS:
-            # Launch Inno Setup silently and exit current app so files can be overwritten
-            subprocess.Popen([installer_path, "/SILENT", "/CLOSEAPPLICATIONS"])
-            os._exit(0)
+            # Spawn the detached update script BEFORE closing the window or exiting
+            current_exe = os.path.abspath(sys.executable)
+            bat_path = os.path.join(TEMP_WORK_DIR, "apply_update.bat")
+            with open(bat_path, "w", encoding="utf-8") as bf:
+                bf.write("@echo off\r\n")
+                # Wait ~3 seconds for the old PulseTube.exe to fully exit (works without console stdin)
+                bf.write("ping 127.0.0.1 -n 4 >nul\r\n")
+                # Run Inno Setup silently and WAIT for it to finish overwriting files
+                bf.write(f'start /wait "" "{installer_path}" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS\r\n')
+                # Relaunch the newly updated PulseTube.exe
+                bf.write(f'start "" "{current_exe}"\r\n')
+                # Clean up temporary installer and batch script
+                bf.write(f'del /f /q "{installer_path}" >nul 2>&1\r\n')
+                bf.write('del /f /q "%~f0" >nul 2>&1\r\n')
+
+            CREATE_NO_WINDOW = 0x08000000
+            subprocess.Popen(
+                ["cmd.exe", "/c", bat_path],
+                creationflags=CREATE_NO_WINDOW,
+                close_fds=True
+            )
         else:
-            # On Linux, prompt for sudo via native polkit GUI (pkexec) to install the .deb, then relaunch
-            cmd = f'pkexec dpkg -i "{installer_path}" && /opt/pulsetube/PulseTube &'
-            subprocess.Popen(["bash", "-c", cmd])
-            os._exit(0)
+            # On Linux, wait 2s, prompt for sudo via polkit GUI (pkexec) to install .deb, then relaunch
+            cmd = f'sleep 2 && pkexec dpkg -i "{installer_path}" && rm -f "{installer_path}" && /opt/pulsetube/PulseTube &'
+            subprocess.Popen(["bash", "-c", cmd], start_new_session=True)
+
+        # Now safely close the Chrome app window and exit the old process
+        try:
+            eel.closeWindowForUpdate()()
+        except Exception:
+            pass
+        time.sleep(0.3)
+        os._exit(0)
 
     except Exception as e:
+        IS_UPDATING = False
         ui_log(f"[ERROR] Update failed: {e}")
         eel.onSelfUpdateError(str(e))()
 
+                
 def launch_app():
     browser_path = find_chromium_browser()
     if browser_path:
@@ -687,7 +718,7 @@ def launch_app():
     os.makedirs(browser_profile_dir, exist_ok=True)
 
     def on_close(page, sockets):
-        if not sockets:
+        if not sockets and not IS_UPDATING:
             os._exit(0)
 
     eel.start(
@@ -699,6 +730,7 @@ def launch_app():
         close_callback=on_close,
         cmdline_args=[
             f"--user-data-dir={browser_profile_dir}",
+            "--disk-cache-size=1",
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-extensions"

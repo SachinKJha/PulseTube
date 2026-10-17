@@ -2,13 +2,13 @@
 [Setup]
 AppId={{8F9A2B4C-5D6E-4A1B-9C8D-7E6F5A4B3C2D}
 AppName=PulseTube Studio
-AppVersion=1.0.0
+AppVersion=1.0.3
 AppPublisher=PulseTube Studio (SKJ)
 DefaultDirName={autopf}\PulseTube
 DefaultGroupName=PulseTube Studio
 DisableProgramGroupPage=yes
 OutputDir=installer_out
-OutputBaseFilename=PulseTube_Setup_v1.0.0
+OutputBaseFilename=PulseTube_Setup_v1.0.3
 SetupIconFile=icon.ico
 Compression=lzma2/fast
 SolidCompression=yes

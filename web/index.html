@@ -119,7 +119,7 @@
       <div>
         <div class="flex items-center gap-2">
           <h1 class="text-base font-bold tracking-tight">PulseTube <span class="text-ytred">Studio</span></h1>
-          <span class="text-[10px] font-semibold uppercase px-2 py-0.5 rounded-full bg-ytred/15 text-ytred border border-ytred/30">Pro v1.0</span>
+          <span class="text-[10px] font-semibold uppercase px-2 py-0.5 rounded-full bg-ytred/15 text-ytred border border-ytred/30">Pro v1.2</span>
         </div>
         <p class="text-[11px] text-slate-500 dark:text-zinc-400">Batch MP3 & MP4 Downloader with Precision Trimming</p>
       </div>
@@ -379,6 +379,11 @@ let pendingUpdateUrl = '';
     function updateSelfUpdateProgress(label, pct) {
       document.getElementById('updateProgressLabel').textContent = label;
       document.getElementById('updateProgressBar').style.width = `${pct}%`;
+    }
+
+    eel.expose(closeWindowForUpdate);
+    function closeWindowForUpdate() {
+      window.close();
     }
 
     eel.expose(onSelfUpdateError);
